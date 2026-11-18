@@ -10,11 +10,9 @@ GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 IGNORED_CHANNELS = [int(x.strip()) for x in os.getenv("IGNORED_CHANNELS", "").split(",") if x.strip().isdigit()]
 MIN_MEMBERS = int(os.getenv("MIN_MEMBERS", "1"))
 
-# Сохраняем в папку data/, чтобы файл не удалялся при пересборке контейнера на BotHost
 DATA_DIR = "data" if os.path.isdir("data") else "."
 DATA_FILE = os.path.join(DATA_DIR, "voice_stats.json")
 
-# Стартовое время по умолчанию: 17075 сек (4h 44m 35s)
 DEFAULT_TOTAL_SECONDS = float(os.getenv("DEFAULT_TOTAL_SECONDS", "17075"))
 DEFAULT_CHANNEL_ID = int(os.getenv("DEFAULT_CHANNEL_ID", "0")) or None
 
@@ -26,7 +24,7 @@ intents.guilds = True
 intents.members = True
 intents.message_content = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents, heartbeat_timeout=150.0)
 
 active_channels = {}
 
@@ -91,6 +89,12 @@ def sync_channel_tracking(channel, now):
             print(f"[ПАУЗА] Канал '{channel.name}' опустел (< {MIN_MEMBERS} чел.). Сохранено: {h}ч {m}м {s}с")
 
 
+@tasks.loop(minutes=5)
+async def keep_presence():
+    if bot.is_ready():
+        await bot.change_presence(status=discord.Status.online)
+
+
 @bot.event
 async def on_ready():
     print(f"2. [OK] Бот успешно подключился как {bot.user}!")
@@ -107,6 +111,8 @@ async def on_ready():
         auto_save_loop.start()
     if not update_channel_name.is_running():
         update_channel_name.start()
+    if not keep_presence.is_running():
+        keep_presence.start()
 
 
 @bot.command()
@@ -213,4 +219,4 @@ async def update_channel_name():
 if __name__ == "__main__":
     if not TOKEN:
         raise RuntimeError("Не задан DISCORD_TOKEN в переменных окружения!")
-    bot.run(TOKEN)
+    bot.run(TOKEN, reconnect=True)
