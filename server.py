@@ -10,11 +10,9 @@ GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 IGNORED_CHANNELS = [int(x.strip()) for x in os.getenv("IGNORED_CHANNELS", "").split(",") if x.strip().isdigit()]
 MIN_MEMBERS = int(os.getenv("MIN_MEMBERS", "1"))
 
-# Всегда сохраняем в постоянную папку data/
 DATA_DIR = "data"
 DATA_FILE = os.path.join(DATA_DIR, "voice_stats.json")
 
-# Стартовое время по умолчанию: 17075 сек (4h 44m 35s)
 DEFAULT_TOTAL_SECONDS = float(os.getenv("DEFAULT_TOTAL_SECONDS", "17075"))
 DEFAULT_CHANNEL_ID = int(os.getenv("DEFAULT_CHANNEL_ID", "0")) or None
 
@@ -26,9 +24,17 @@ intents.guilds = True
 intents.members = True
 intents.message_content = True
 
-bot = commands.Bot(command_prefix="!", intents=intents, heartbeat_timeout=150.0)
+bot = commands.Bot(
+    command_prefix="!",
+    intents=intents,
+    heartbeat_timeout=150.0,
+    help_command=None
+)
 
+# Активные комнаты: {channel_id: timestamp_старта}
 active_channels = {}
+# Активные пользователи в войсе: {user_id_str: timestamp_старта}
+active_users = {}
 
 
 def load_data():
@@ -37,21 +43,33 @@ def load_data():
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                return data.get("total_seconds", DEFAULT_TOTAL_SECONDS), data.get("channel_id", DEFAULT_CHANNEL_ID)
+                return (
+                    data.get("total_seconds", DEFAULT_TOTAL_SECONDS),
+                    data.get("channel_id", DEFAULT_CHANNEL_ID),
+                    data.get("users", {})
+                )
         except Exception as e:
             print(f"[ПРЕДУПРЕЖДЕНИЕ] Не удалось прочитать {DATA_FILE}: {e}")
-    return DEFAULT_TOTAL_SECONDS, DEFAULT_CHANNEL_ID
+    return DEFAULT_TOTAL_SECONDS, DEFAULT_CHANNEL_ID, {}
 
 
-def save_data(seconds, channel_id):
+def save_data(seconds, channel_id, users_dict):
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump({"total_seconds": seconds, "channel_id": channel_id}, f, indent=4)
+        json.dump(
+            {
+                "total_seconds": seconds,
+                "channel_id": channel_id,
+                "users": users_dict
+            },
+            f,
+            indent=4
+        )
 
 
-total_seconds, stats_channel_id = load_data()
+total_seconds, stats_channel_id, user_seconds = load_data()
 if not os.path.exists(DATA_FILE):
-    save_data(total_seconds, stats_channel_id)
+    save_data(total_seconds, stats_channel_id, user_seconds)
 
 
 def format_time(seconds):
@@ -68,6 +86,15 @@ def get_live_total_seconds():
     return total_seconds + live_extra
 
 
+def get_live_user_seconds():
+    """Возвращает словарь {user_id: общее_время} с учётом тех, кто сейчас в войсе"""
+    now = time.time()
+    live_users = dict(user_seconds)
+    for uid, start_time in active_users.items():
+        live_users[uid] = live_users.get(uid, 0.0) + (now - start_time)
+    return live_users
+
+
 def is_valid_voice(channel):
     if channel is None or channel.id in IGNORED_CHANNELS:
         return False
@@ -80,14 +107,31 @@ def sync_channel_tracking(channel, now):
         return
 
     human_members = [m for m in channel.members if not m.bot]
+    current_human_ids = {str(m.id) for m in human_members}
+
     if len(human_members) >= MIN_MEMBERS:
         if channel.id not in active_channels:
             active_channels[channel.id] = now
             print(f"[СТАРТ] Канал '{channel.name}' активен ({len(human_members)} чел.). Время пошло.")
+
+        # Запускаем таймер каждому участнику в этой комнате
+        for uid in current_human_ids:
+            if uid not in active_users:
+                active_users[uid] = now
     else:
+        changed = False
         if channel.id in active_channels:
             total_seconds += now - active_channels.pop(channel.id)
-            save_data(total_seconds, stats_channel_id)
+            changed = True
+
+        # Ставим на паузу таймеры участников, оставшихся в этой комнате
+        for uid in current_human_ids:
+            if uid in active_users:
+                user_seconds[uid] = user_seconds.get(uid, 0.0) + (now - active_users.pop(uid))
+                changed = True
+
+        if changed:
+            save_data(total_seconds, stats_channel_id, user_seconds)
             h, m, s = format_time(total_seconds)
             print(f"[ПАУЗА] Канал '{channel.name}' опустел (< {MIN_MEMBERS} чел.). Сохранено: {h}ч {m}м {s}с")
 
@@ -118,6 +162,83 @@ async def on_ready():
         keep_presence.start()
 
 
+@bot.command(name="help")
+async def help_command(ctx):
+    """Выводит список всех доступных команд бота"""
+    embed = discord.Embed(
+        title="📋 Команды бота Voice Stats",
+        description="Отслеживание времени в голосовых каналах сервера:",
+        color=discord.Color.blurple()
+    )
+    embed.add_field(
+        name="`!voice`",
+        value="Показывает общее накопленное время всех участников до секунды.",
+        inline=False
+    )
+    embed.add_field(
+        name="`!top`",
+        value="Выводит топ-10 самых активных участников в голосовых каналах.",
+        inline=False
+    )
+    embed.add_field(
+        name="`!live`",
+        value="Запускает живой таймер в чате на 60 секунд с обновлением раз в секунду.",
+        inline=False
+    )
+    embed.add_field(
+        name="`!create_stats` *(только для админов)*",
+        value="Создаёт закрытый голосовой канал-счётчик с замочком.",
+        inline=False
+    )
+    embed.add_field(
+        name="`!help`",
+        value="Показывает это справочное сообщение.",
+        inline=False
+    )
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+async def top(ctx):
+    """Выводит топ-10 участников по времени в голосовых каналах"""
+    live_users = get_live_user_seconds()
+    # Отфильтровываем нулевые значения и сортируем по убыванию
+    sorted_users = sorted(
+        [(uid, secs) for uid, secs in live_users.items() if secs >= 1],
+        key=lambda item: item[1],
+        reverse=True
+    )
+
+    if not sorted_users:
+        await ctx.send("📉 Пока никто не успел накопить время в голосовых каналах.")
+        return
+
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+    lines = []
+    for idx, (uid, secs) in enumerate(sorted_users[:10], start=1):
+        h, m, s = format_time(secs)
+        member = ctx.guild.get_member(int(uid))
+        name = member.display_name if member else f"<@{uid}>"
+        prefix = medals.get(idx, f"**{idx}.**")
+        lines.append(f"{prefix} **{name}** — `{h}ч {m}м {s}с`")
+
+    embed = discord.Embed(
+        title="🏆 Топ участников по времени в войсе",
+        description="\n".join(lines),
+        color=discord.Color.gold()
+    )
+
+    # Показываем место автора команды, если он есть в статистике
+    author_id = str(ctx.author.id)
+    for idx, (uid, secs) in enumerate(sorted_users, start=1):
+        if uid == author_id:
+            ah, am, as_ = format_time(secs)
+            embed.set_footer(text=f"Твоё место: #{idx} ({ah}ч {am}м {as_}с)")
+            break
+
+    await ctx.send(embed=embed)
+
+
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def create_stats(ctx):
@@ -135,7 +256,7 @@ async def create_stats(ctx):
             overwrites=overwrites
         )
         stats_channel_id = channel.id
-        save_data(total_seconds, stats_channel_id)
+        save_data(total_seconds, stats_channel_id, user_seconds)
         print(f"[КАНАЛ СОЗДАН] {channel.name} (ID: {channel.id})")
         await ctx.send(
             f"✅ Создан канал-счетчик: **{channel.name}**.\n"
@@ -173,6 +294,13 @@ async def on_voice_state_update(member, before, after):
     if member.bot:
         return
     now = time.time()
+    uid = str(member.id)
+
+    # Если пользователь полностью вышел из голосовых каналов — фиксируем его сессию
+    if after.channel is None and uid in active_users:
+        user_seconds[uid] = user_seconds.get(uid, 0.0) + (now - active_users.pop(uid))
+        save_data(total_seconds, stats_channel_id, user_seconds)
+
     if before.channel is not None:
         sync_channel_tracking(before.channel, now)
     if after.channel is not None and after.channel != before.channel:
@@ -182,18 +310,22 @@ async def on_voice_state_update(member, before, after):
 @tasks.loop(minutes=1)
 async def auto_save_loop():
     global total_seconds
-    if not active_channels:
+    if not active_channels and not active_users:
         return
 
     now = time.time()
-    added = 0
+    added_total = 0.0
     for ch_id, start_time in list(active_channels.items()):
-        added += (now - start_time)
+        added_total += (now - start_time)
         active_channels[ch_id] = now
 
-    if added > 0:
-        total_seconds += added
-        save_data(total_seconds, stats_channel_id)
+    for uid, start_time in list(active_users.items()):
+        user_seconds[uid] = user_seconds.get(uid, 0.0) + (now - start_time)
+        active_users[uid] = now
+
+    if added_total > 0 or active_users:
+        total_seconds += added_total
+        save_data(total_seconds, stats_channel_id, user_seconds)
         h, m, s = format_time(total_seconds)
         print(f"[АВТОСОХРАНЕНИЕ] {h}ч {m}м {s}с (активных комнат: {len(active_channels)})")
 
