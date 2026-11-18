@@ -10,9 +10,11 @@ GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 IGNORED_CHANNELS = [int(x.strip()) for x in os.getenv("IGNORED_CHANNELS", "").split(",") if x.strip().isdigit()]
 MIN_MEMBERS = int(os.getenv("MIN_MEMBERS", "1"))
 
-DATA_DIR = "data" if os.path.isdir("data") else "."
+# Всегда сохраняем в постоянную папку data/
+DATA_DIR = "data"
 DATA_FILE = os.path.join(DATA_DIR, "voice_stats.json")
 
+# Стартовое время по умолчанию: 17075 сек (4h 44m 35s)
 DEFAULT_TOTAL_SECONDS = float(os.getenv("DEFAULT_TOTAL_SECONDS", "17075"))
 DEFAULT_CHANNEL_ID = int(os.getenv("DEFAULT_CHANNEL_ID", "0")) or None
 
@@ -30,6 +32,7 @@ active_channels = {}
 
 
 def load_data():
+    os.makedirs(DATA_DIR, exist_ok=True)
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -47,7 +50,7 @@ def save_data(seconds, channel_id):
 
 
 total_seconds, stats_channel_id = load_data()
-if not os.path.exists(DATA_FILE) and (total_seconds > 0 or stats_channel_id):
+if not os.path.exists(DATA_FILE):
     save_data(total_seconds, stats_channel_id)
 
 
