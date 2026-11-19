@@ -11,6 +11,7 @@ IGNORED_CHANNELS = [int(x.strip()) for x in os.getenv("IGNORED_CHANNELS", "").sp
 MIN_MEMBERS = int(os.getenv("MIN_MEMBERS", "1"))
 
 CUSTOM_STATUS_TEXT = "Бот для отсматривания времени в войсе"
+AUTO_DELETE_SECONDS = 180  # 3 минуты
 
 DATA_DIR = "data"
 DATA_FILE = os.path.join(DATA_DIR, "voice_stats.json")
@@ -136,6 +137,16 @@ def sync_channel_tracking(channel, now):
             print(f"[ПАУЗА] Канал '{channel.name}' опустел (< {MIN_MEMBERS} чел.). Сохранено: {h}ч {m}м {s}с")
 
 
+@bot.before_invoke
+async def schedule_user_message_delete(ctx):
+    """Планирует удаление сообщения автора команды через 3 минуты"""
+    if ctx.guild is not None:
+        try:
+            await ctx.message.delete(delay=AUTO_DELETE_SECONDS)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+
 @tasks.loop(minutes=5)
 async def keep_presence():
     if bot.is_ready():
@@ -203,7 +214,8 @@ async def help_command(ctx):
         value="Показывает это справочное сообщение.",
         inline=False
     )
-    await ctx.send(embed=embed)
+    embed.set_footer(text="Команда и ответ автоматически удалятся через 3 минуты")
+    await ctx.send(embed=embed, delete_after=AUTO_DELETE_SECONDS)
 
 
 @bot.command()
@@ -217,7 +229,10 @@ async def top(ctx):
     )
 
     if not sorted_users:
-        await ctx.send("📉 Пока никто не успел накопить время в голосовых каналах.")
+        await ctx.send(
+            "📉 Пока никто не успел накопить время в голосовых каналах.",
+            delete_after=AUTO_DELETE_SECONDS
+        )
         return
 
     medals = {1: "🥇", 2: "🥈", 3: "🥉"}
@@ -236,13 +251,15 @@ async def top(ctx):
     )
 
     author_id = str(ctx.author.id)
+    footer_parts = ["Удаление через 3 мин."]
     for idx, (uid, secs) in enumerate(sorted_users, start=1):
         if uid == author_id:
             ah, am, as_ = format_time(secs)
-            embed.set_footer(text=f"Твоё место: #{idx} ({ah}ч {am}м {as_}с)")
+            footer_parts.insert(0, f"Твоё место: #{idx} ({ah}ч {am}м {as_}с)")
             break
 
-    await ctx.send(embed=embed)
+    embed.set_footer(text=" • ".join(footer_parts))
+    await ctx.send(embed=embed, delete_after=AUTO_DELETE_SECONDS)
 
 
 @bot.command()
@@ -266,10 +283,14 @@ async def create_stats(ctx):
         print(f"[КАНАЛ СОЗДАН] {channel.name} (ID: {channel.id})")
         await ctx.send(
             f"✅ Создан канал-счетчик: **{channel.name}**.\n"
-            f"Можешь перетащить его в нужную категорию (главное — не нажимай «Синхронизировать с категорией»)."
+            f"Можешь перетащить его в нужную категорию (главное — не нажимай «Синхронизировать с категорией»).",
+            delete_after=AUTO_DELETE_SECONDS
         )
     except discord.Forbidden:
-        await ctx.send("❌ У бота нет права «Управлять каналами» на сервере!")
+        await ctx.send(
+            "❌ У бота нет права «Управлять каналами» на сервере!",
+            delete_after=AUTO_DELETE_SECONDS
+        )
 
 
 @bot.command()
@@ -279,7 +300,8 @@ async def voice(ctx):
     await ctx.send(
         f"🎙 **Общая статистика голосовых каналов:**\n"
         f"⏱ **{h}** ч. **{m}** мин. **{s}** сек.\n"
-        f"*(Активных комнат сейчас: {len(active_channels)})*"
+        f"*(Активных комнат сейчас: {len(active_channels)})*",
+        delete_after=AUTO_DELETE_SECONDS
     )
 
 
@@ -291,8 +313,13 @@ async def live(ctx):
         try:
             await msg.edit(content=f"🎙 **В войсе сейчас (Live):** `{h}ч {m}м {s}с`")
         except discord.HTTPException:
-            break
+            return
         await asyncio.sleep(1)
+
+    try:
+        await msg.delete(delay=AUTO_DELETE_SECONDS)
+    except (discord.Forbidden, discord.HTTPException):
+        pass
 
 
 @bot.event
