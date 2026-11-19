@@ -10,6 +10,8 @@ GUILD_ID = int(os.getenv("GUILD_ID", "0"))
 IGNORED_CHANNELS = [int(x.strip()) for x in os.getenv("IGNORED_CHANNELS", "").split(",") if x.strip().isdigit()]
 MIN_MEMBERS = int(os.getenv("MIN_MEMBERS", "1"))
 
+CUSTOM_STATUS_TEXT = "Бот для отсматривания времени в войсе"
+
 DATA_DIR = "data"
 DATA_FILE = os.path.join(DATA_DIR, "voice_stats.json")
 
@@ -114,7 +116,6 @@ def sync_channel_tracking(channel, now):
             active_channels[channel.id] = now
             print(f"[СТАРТ] Канал '{channel.name}' активен ({len(human_members)} чел.). Время пошло.")
 
-        # Запускаем таймер каждому участнику в этой комнате
         for uid in current_human_ids:
             if uid not in active_users:
                 active_users[uid] = now
@@ -124,7 +125,6 @@ def sync_channel_tracking(channel, now):
             total_seconds += now - active_channels.pop(channel.id)
             changed = True
 
-        # Ставим на паузу таймеры участников, оставшихся в этой комнате
         for uid in current_human_ids:
             if uid in active_users:
                 user_seconds[uid] = user_seconds.get(uid, 0.0) + (now - active_users.pop(uid))
@@ -139,12 +139,20 @@ def sync_channel_tracking(channel, now):
 @tasks.loop(minutes=5)
 async def keep_presence():
     if bot.is_ready():
-        await bot.change_presence(status=discord.Status.online)
+        await bot.change_presence(
+            status=discord.Status.online,
+            activity=discord.CustomActivity(name=CUSTOM_STATUS_TEXT)
+        )
 
 
 @bot.event
 async def on_ready():
     print(f"2. [OK] Бот успешно подключился как {bot.user}!")
+    await bot.change_presence(
+        status=discord.Status.online,
+        activity=discord.CustomActivity(name=CUSTOM_STATUS_TEXT)
+    )
+
     guild = bot.get_guild(GUILD_ID)
     if not guild:
         print(f"[ОШИБКА] Сервер с ID {GUILD_ID} не найден! Проверь GUILD_ID.")
@@ -202,7 +210,6 @@ async def help_command(ctx):
 async def top(ctx):
     """Выводит топ-10 участников по времени в голосовых каналах"""
     live_users = get_live_user_seconds()
-    # Отфильтровываем нулевые значения и сортируем по убыванию
     sorted_users = sorted(
         [(uid, secs) for uid, secs in live_users.items() if secs >= 1],
         key=lambda item: item[1],
@@ -228,7 +235,6 @@ async def top(ctx):
         color=discord.Color.gold()
     )
 
-    # Показываем место автора команды, если он есть в статистике
     author_id = str(ctx.author.id)
     for idx, (uid, secs) in enumerate(sorted_users, start=1):
         if uid == author_id:
@@ -296,7 +302,6 @@ async def on_voice_state_update(member, before, after):
     now = time.time()
     uid = str(member.id)
 
-    # Если пользователь полностью вышел из голосовых каналов — фиксируем его сессию
     if after.channel is None and uid in active_users:
         user_seconds[uid] = user_seconds.get(uid, 0.0) + (now - active_users.pop(uid))
         save_data(total_seconds, stats_channel_id, user_seconds)
